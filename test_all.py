@@ -57,10 +57,6 @@ def encode_tokens(tokens, max_len=50):
 
 def encode_tags(tags, max_len=50):
     # tags are integers per WikiAnn spec: we map them to our label_map keys
-    # Actually, WikiAnn ner_tags are already integers. Need to confirm.
-    # The dataset uses a ClassLabel with order: ['O', 'B-PER', 'I-PER', 'B-ORG', 'I-ORG', 'B-LOC', 'I-LOC']
-    # If needed, we can just trust that it's the same order as label_map, or map from dataset feature:
-    # We'll assume the order matches since WikiAnn often provides these exact tags.
     tag_ids = tags[:max_len]
     pad_len = max_len - len(tag_ids)
     tag_ids += [label_map["O"]] * pad_len

@@ -7,5 +7,6 @@ languages = ['en', 'fr', 'zh', 'ar', 'fa', 'sw', 'fi']
 for lang in languages:
     dataset = load_dataset('unimelb-nlp/wikiann', lang)
     print(lang)
+    print(dataset['train'][0])
     # Access the dataset splits
     dataset.save_to_disk(f"./processed_wikiann_{lang}")
