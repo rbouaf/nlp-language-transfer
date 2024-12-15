@@ -1,3 +1,4 @@
+# External Imports
 import os
 from datasets import load_from_disk, concatenate_datasets, DatasetDict
 from collections import Counter
@@ -6,27 +7,16 @@ from torch.utils.data import DataLoader, Dataset
 import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+from collections import defaultdict, Counter
+# Internal Imports
+from load_data import load_data, langs, label_map
 
-# Languages,
-langs = [ 'en', 'fr', 'zh', 'ar', 'fa','sw', 'fi']
-data_paths = [f"./processed_wikiann_{lang}" for lang in langs]
+# Load data from our files
+datasets = load_data()
 
-datasets = {}
-for lang, path in zip(langs, data_paths):
-    datasets[lang] = load_from_disk(path)
-    print(f"Loaded {lang} dataset")
 
-# Label mapping (given)
-label_map = {
-    "O": 0,
-    "B-PER": 1,
-    "I-PER": 2,
-    "B-ORG": 3,
-    "I-ORG": 4,
-    "B-LOC": 5,
-    "I-LOC": 6,
-}
-num_tags = len(label_map)
+number_of_tags = len(label_map)
 id2label = {v: k for k, v in label_map.items()}
 
 # Combine all training datasets into one for vocabulary building
@@ -37,15 +27,20 @@ combined_train = concatenate_datasets(train_sets)
 word_counter = Counter()
 for example in combined_train:
     word_counter.update(example['tokens'])
-
-# Most frequent words; you can limit vocab size if desired.
 words = list(word_counter.keys())
-# Add special tokens
 words = ["<PAD>", "<UNK>"] + words
 word2id = {w: i for i, w in enumerate(words)}
 vocab_size = len(word2id)
 print(f"Vocab size: {vocab_size}")
 
+# Create combined datasets
+def make_multilingual_dataset(datasets, langs):
+    train_dataset = concatenate_datasets([datasets[l]['train'] for l in langs])
+    val_dataset = concatenate_datasets([datasets[l]['validation'] for l in langs])
+    test_dataset = concatenate_datasets([datasets[l]['test'] for l in langs])
+    return DatasetDict({'train': train_dataset, 'validation': val_dataset, 'test': test_dataset})
+
+multilingual_dataset = make_multilingual_dataset(datasets, langs)
 def encode_tokens(tokens, max_len=50):
     # Convert tokens to IDs, unknown if not in vocab
     token_ids = [word2id[w] if w in word2id else word2id["<UNK>"] for w in tokens]
@@ -56,7 +51,6 @@ def encode_tokens(tokens, max_len=50):
     return token_ids
 
 def encode_tags(tags, max_len=50):
-    # tags are integers per WikiAnn spec: we map them to our label_map keys
     tag_ids = tags[:max_len]
     pad_len = max_len - len(tag_ids)
     tag_ids += [label_map["O"]] * pad_len
@@ -80,16 +74,6 @@ class NERDataset(Dataset):
 
         return torch.tensor(token_ids, dtype=torch.long), torch.tensor(tag_ids, dtype=torch.long)
 
-# Create combined datasets
-def make_multilingual_dataset(datasets, langs):
-    train_dataset = concatenate_datasets([datasets[l]['train'] for l in langs])
-    val_dataset = concatenate_datasets([datasets[l]['validation'] for l in langs])
-    test_dataset = concatenate_datasets([datasets[l]['test'] for l in langs])
-    return DatasetDict({'train': train_dataset, 'validation': val_dataset, 'test': test_dataset})
-
-multilingual_dataset = make_multilingual_dataset(datasets, langs)
-
-
 train_data = NERDataset(multilingual_dataset['train'], max_len=50)
 val_data = NERDataset(multilingual_dataset['validation'], max_len=50)
 test_data = NERDataset(multilingual_dataset['test'], max_len=50)
@@ -98,8 +82,11 @@ train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
 val_loader = DataLoader(val_data, batch_size=32)
 test_loader = DataLoader(test_data, batch_size=32)
 
+#######################################################################
+#  MODELS                                                             #
+#######################################################################
 #########################################
-# CRF Implementation
+# CRF Layer Implementation
 #########################################
 class CRF(nn.Module):
     def __init__(self, num_tags):
@@ -152,10 +139,10 @@ class CRF(nn.Module):
         gold_score = self.score_sentence(feats, tags)
         return (forward_score - gold_score).mean()
 
+
 #########################################
 # LSTM-CRF Model
 #########################################
-
 class LSTMCRF(nn.Module):
     def __init__(self, vocab_size, embed_dim, hidden_dim, num_tags):
         super(LSTMCRF, self).__init__()
@@ -176,35 +163,149 @@ class LSTMCRF(nn.Module):
             # decode
             return self.crf.viterbi_decode(feats)
 
-model = LSTMCRF(vocab_size=vocab_size, embed_dim=100, hidden_dim=128, num_tags=num_tags)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+lstmcrf_model = LSTMCRF(vocab_size=vocab_size, embed_dim=100, hidden_dim=128, num_tags=number_of_tags)
+optimizer = torch.optim.Adam(lstmcrf_model.parameters(), lr=0.001)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
+lstmcrf_model.to(device)
 
-# Training
+######## Training
 epochs = 1
 for epoch in range(epochs):
-    model.train()
+    lstmcrf_model.train()
     total_loss = 0
     for token_ids, tag_ids in train_loader:
         token_ids, tag_ids = token_ids.to(device), tag_ids.to(device)
         optimizer.zero_grad()
-        loss = model(token_ids, tags=tag_ids)
+        loss = lstmcrf_model(token_ids, tags=tag_ids)
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
     print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader):.4f}")
 
 # Evaluation
-model.eval()
+lstmcrf_model.eval()
 
-def evaluate(data_loader):
+#########################################
+# HMM Model
+#########################################
+class HMM:
+    def __init__(self, label_map, vocab_size):
+        self.label_map = label_map
+        self.num_tags = len(label_map)
+        self.vocab_size = vocab_size
+        self.start_probs = np.zeros(self.num_tags)  # P(tag_start)
+        self.transition_probs = np.zeros((self.num_tags, self.num_tags))  # P(tag_next | tag_current)
+        self.emission_probs = np.zeros((self.num_tags, vocab_size))  # P(word | tag)
+
+    def train(self, train_loader):
+        # Counters for probabilities
+        start_counter = Counter()
+        transition_counter = Counter()
+        emission_counter = Counter()
+
+        # Iterate through training data
+        for token_ids, tag_ids in train_loader:
+            token_ids = token_ids.numpy()
+            tag_ids = tag_ids.numpy()
+            for tokens, tags in zip(token_ids, tag_ids):
+                # Start probabilities
+                start_counter[tags[0]] += 1
+
+                # Transition and emission probabilities
+                for i in range(len(tokens) - 1):
+                    current_tag = tags[i]
+                    next_tag = tags[i + 1]
+                    token = tokens[i]
+                    transition_counter[(current_tag, next_tag)] += 1
+                    emission_counter[(current_tag, token)] += 1
+
+                # Last word's emission
+                emission_counter[(tags[-1], tokens[-1])] += 1
+
+        # Convert counts to probabilities
+        total_starts = sum(start_counter.values())
+        self.start_probs = np.array([start_counter[tag] / total_starts for tag in range(self.num_tags)])
+
+        for (tag, next_tag), count in transition_counter.items():
+            self.transition_probs[tag, next_tag] = count
+        self.transition_probs = self.transition_probs / self.transition_probs.sum(axis=1, keepdims=True)
+
+        for (tag, token), count in emission_counter.items():
+            self.emission_probs[tag, token] = count
+        self.emission_probs = self.emission_probs / self.emission_probs.sum(axis=1, keepdims=True)
+
+    def viterbi_decode(self, token_ids):
+        seq_len = len(token_ids)
+        viterbi = np.zeros((seq_len, self.num_tags))
+        backpointer = np.zeros((seq_len, self.num_tags), dtype=int)
+
+        # Initialize
+        viterbi[0] = self.start_probs * self.emission_probs[:, token_ids[0]]
+
+        # Recursion
+        for t in range(1, seq_len):
+            for tag in range(self.num_tags):
+                prob_transitions = viterbi[t - 1] * self.transition_probs[:, tag]
+                viterbi[t, tag] = np.max(prob_transitions) * self.emission_probs[tag, token_ids[t]]
+                backpointer[t, tag] = np.argmax(prob_transitions)
+
+        # Backtracking
+        best_path = []
+        best_tag = np.argmax(viterbi[-1])
+        best_path.append(best_tag)
+
+        for t in range(seq_len - 1, 0, -1):
+            best_tag = backpointer[t, best_tag]
+            best_path.insert(0, best_tag)
+
+        return best_path
+
+    def predict(self, data_loader):
+        all_preds = []
+        all_labels = []
+        for token_ids, tag_ids in data_loader:
+            token_ids = token_ids.numpy()
+            tag_ids = tag_ids.numpy()
+            for tokens, tags in zip(token_ids, tag_ids):
+                preds = self.viterbi_decode(tokens)
+                all_preds.append(preds)
+                all_labels.append(tags.tolist())
+        return all_preds, all_labels
+
+######## Training
+hmm_model = HMM(label_map=label_map, vocab_size=vocab_size)
+hmm_model.train(train_loader)
+hmm_preds, hmm_labels = hmm_model.predict(val_loader)
+
+#######################################################################
+#  MODEL EVALUATIONS                                                  #
+#######################################################################
+def evaluate_hmm(preds, labels, ignore_label=label_map["O"]):
+    t = [x for seq in labels for x in seq]
+    p = [x for seq in preds for x in seq]
+
+    # Remove padding
+    paired = [(x, y) for x, y in zip(t, p) if x != 0 or y != 0]
+
+    t = [x for x, y in paired]
+    p = [y for x, y in paired]
+
+    tp = sum(1 for x, y in zip(t, p) if x == y and x != ignore_label)
+    fp = sum(1 for x, y in zip(t, p) if y != x and y != ignore_label)
+    fn = sum(1 for x, y in zip(t, p) if x != y and x != ignore_label)
+
+    precision = tp / (tp + fp + 1e-10)
+    recall = tp / (tp + fn + 1e-10)
+    f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
+    return precision, recall, f1
+
+def evaluate_lstmcrf(data_loader):
     all_preds = []
     all_labels = []
     with torch.no_grad():
         for token_ids, tag_ids in data_loader:
             token_ids, tag_ids = token_ids.to(device), tag_ids.to(device)
-            preds = model(token_ids)
+            preds = lstmcrf_model(token_ids)
             # preds shape: (batch, seq_len)
             # tag_ids shape: (batch, seq_len)
             preds = preds.cpu().tolist()
@@ -243,5 +344,9 @@ def evaluate(data_loader):
     f1 = 2*(precision*recall)/(precision+recall+1e-10)
     return precision, recall, f1
 
-precision, recall, f1 = evaluate(val_loader)
-print(f"Val Set: Precision={precision:.3f}, Recall={recall:.3f}, F1={f1:.3f}")
+hmm_precision, hmm_recall, hmm_f1 = evaluate_hmm(hmm_preds, hmm_labels)
+print(f"[  HMM   ] Precision:{hmm_precision:.3f}, Recall:{hmm_recall:.3f}, F1:{hmm_f1:.3f}")
+
+lstmcrf_precision, lstmcrf_recall, lstmcrf_f1 = evaluate_lstmcrf(val_loader)
+print(f"[LSTM-CRF] Precision={lstmcrf_precision:.3f}, Recall={lstmcrf_recall:.3f}, F1={lstmcrf_f1:.3f}")
+
