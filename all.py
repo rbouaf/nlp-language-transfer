@@ -1,20 +1,19 @@
-# External Imports
-import os
-from datasets import load_from_disk, concatenate_datasets, DatasetDict
-from collections import Counter
+print("Importing...please wait")
+import threading
+import itertools
+import sys
+import time
+from load_data import load_data, langs, label_map
+from datasets import concatenate_datasets, DatasetDict
 import torch
 from torch.utils.data import DataLoader, Dataset
 import torch.nn as nn
 import numpy as np
-import matplotlib.pyplot as plt
-import numpy as np
-from collections import defaultdict, Counter
-# Internal Imports
-from load_data import load_data, langs, label_map
+from collections import Counter
+import re
 
 # Load data from our files
 datasets = load_data()
-
 
 number_of_tags = len(label_map)
 id2label = {v: k for k, v in label_map.items()}
@@ -277,6 +276,73 @@ hmm_model = HMM(label_map=label_map, vocab_size=vocab_size)
 hmm_model.train(train_loader)
 hmm_preds, hmm_labels = hmm_model.predict(val_loader)
 
+#####################################################
+# Bootstrapping with Seed Entities + Hearst Patterns#
+#####################################################
+
+class BootstrappingNER:
+    def __init__(self, label_map, seed_entities):
+        self.label_map = label_map
+        self.seed_entities = seed_entities
+        self.patterns = self._define_patterns()
+
+    def _define_patterns(self):
+        """
+        Define Hearst-like patterns for entity extraction.
+        """
+        return {
+            "B-PER": [r"\b(?:Dr|Mr|Ms|Mrs|Prof)\.?\s+[A-Z][a-z]+",  # Titles followed by a name
+                      r"\b[A-Z][a-z]+\s+[A-Z][a-z]+"],  # First name + Last name
+            "B-ORG": [r"\b[A-Z][a-z]+ (Corporation|Company|Inc|Ltd)",  # Corporate names
+                      r"\b[A-Z][a-z]+ (University|College)"],  # Educational institutions
+            "B-LOC": [r"\b(?:City of|Town of|Province of)\s+[A-Z][a-z]+",  # Locations with a prefix
+                      r"\b[A-Z][a-z]+,?\s+[A-Z][a-z]+"]  # City, Country
+        }
+
+    def extract_entities(self, text):
+        """
+        Extract entities from text using patterns and seed entities.
+        """
+        predictions = []
+        for tag, patterns in self.patterns.items():
+            for pattern in patterns:
+                matches = re.finditer(pattern, text)
+                for match in matches:
+                    predictions.append((match.start(), match.end(), tag, match.group()))
+        return predictions
+
+    def predict(self, data_loader):
+        """
+        Apply patterns to the dataset and predict entities.
+        """
+        all_preds = []
+        all_labels = []
+
+        for token_ids, tag_ids in data_loader:
+            # Decode tokens back to text
+            tokens = [[id2label[tag_id] for tag_id in sequence] for sequence in tag_ids.numpy()]
+            for token_seq in tokens:
+                text = " ".join(token_seq)
+                predictions = self.extract_entities(text)
+                all_preds.append(predictions)
+                all_labels.append(token_seq)
+
+        return all_preds, all_labels
+
+# Seed Entities
+seed_entities = {
+    "B-PER": ["John Doe", "Jane Smith"],
+    "B-ORG": ["OpenAI", "Google", "Stanford University"],
+    "B-LOC": ["San Francisco", "New York"]
+}
+
+# Bootstrapping model
+bootstrapper = BootstrappingNER(label_map, seed_entities)
+
+# Predict using bootstrapping
+bootstrapping_preds, bootstrapping_labels = bootstrapper.predict(val_loader)
+
+
 #######################################################################
 #  MODEL EVALUATIONS                                                  #
 #######################################################################
@@ -344,9 +410,32 @@ def evaluate_lstmcrf(data_loader):
     f1 = 2*(precision*recall)/(precision+recall+1e-10)
     return precision, recall, f1
 
+def evaluate_bootstrapping(preds, labels, ignore_label=label_map["O"]):
+    # Flatten predictions and labels
+    t = [x for seq in labels for x in seq]
+    p = [x for seq in preds for x in seq]
+
+    # Ignore padding and O labels
+    paired = [(x, y) for x, y in zip(t, p) if x != ignore_label or y != ignore_label]
+
+    t = [x for x, y in paired]
+    p = [y for x, y in paired]
+
+    tp = sum(1 for x, y in zip(t, p) if x == y and x != ignore_label)
+    fp = sum(1 for x, y in zip(t, p) if y != x and y != ignore_label)
+    fn = sum(1 for x, y in zip(t, p) if x != y and x != ignore_label)
+
+    precision = tp / (tp + fp + 1e-10)
+    recall = tp / (tp + fn + 1e-10)
+    f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
+    return precision, recall, f1
+
+
 hmm_precision, hmm_recall, hmm_f1 = evaluate_hmm(hmm_preds, hmm_labels)
-print(f"[  HMM   ] Precision:{hmm_precision:.3f}, Recall:{hmm_recall:.3f}, F1:{hmm_f1:.3f}")
+print(f"[  HMM   ] Precision: {hmm_precision:.3f} \t Recall: {hmm_recall:.3f} \t F1: {hmm_f1:.3f}")
 
 lstmcrf_precision, lstmcrf_recall, lstmcrf_f1 = evaluate_lstmcrf(val_loader)
-print(f"[LSTM-CRF] Precision={lstmcrf_precision:.3f}, Recall={lstmcrf_recall:.3f}, F1={lstmcrf_f1:.3f}")
+print(f"[LSTM-CRF] Precision: {lstmcrf_precision:.3f} \t Recall: {lstmcrf_recall:.3f} \t F1: {lstmcrf_f1:.3f}")
 
+bootstrap_precision, bootstrap_recall, bootstrap_f1 = evaluate_bootstrapping(bootstrapping_preds, bootstrapping_labels)
+print(f"[Bootstrapping] Precision: {bootstrap_precision:.3f} \t Recall: {bootstrap_recall:.3f} \t F1: {bootstrap_f1:.3f}")

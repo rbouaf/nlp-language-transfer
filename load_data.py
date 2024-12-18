@@ -1,7 +1,7 @@
-from datasets import load_dataset, DatasetDict, load_from_disk
+from datasets import load_dataset, load_from_disk
 
 # List of languages we will test
-langs = ['en', 'fr', 'zh', 'ar', 'fa', 'sw', 'fi']
+langs = ['en','fr', 'zh', 'ar', 'fa','sw', 'fi']
 # Label mapping (given by WikiAnn)
 label_map = {"O": 0,"B-PER": 1,"I-PER": 2,"B-ORG": 3,"I-ORG": 4,"B-LOC": 5,"I-LOC": 6}
 
@@ -9,7 +9,6 @@ label_map = {"O": 0,"B-PER": 1,"I-PER": 2,"B-ORG": 3,"I-ORG": 4,"B-LOC": 5,"I-LO
 for lang in langs:
     dataset = load_dataset('unimelb-nlp/wikiann', lang)
     dataset.save_to_disk(f"./processed_wikiann_{lang}")
-
 
 def load_data():
     data_paths = [f"./processed_wikiann_{lang}" for lang in langs]
