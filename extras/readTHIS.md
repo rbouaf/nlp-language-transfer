@@ -1,0 +1,1 @@
+DistilBERT is way too slow so we will run it seperately to every other model.
