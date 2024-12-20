@@ -27,11 +27,6 @@ for combo in lang_combos:
     lstmcrf_end = time.time()
     print("LSTM-CRF for ", combo, " took ", lstmcrf_end - lstmcrf_start, " seconds")
 
-    print("Bootstrapping for ", combo, " starting")
-    bootstrap_start = time.time()
-    bootstrap_precision, bootstrap_recall, bootstrap_f1 = bootstrapping(id2label,val_loader)
-    bootstrap_end = time.time()
-    print("Bootstrapping for ", combo, " took ", bootstrap_end - bootstrap_start, " seconds")
 
     # Decision Tree requires feature mapping
     print(f"Building feature mapping for Decision Tree (if required) for {combo}")

@@ -1,7 +1,7 @@
 import time
 from langs import langs, label_map
-from preprocessing import vocab_and_datasets, preprocess, preprocess_for_distilbert, build_feature_mapping
-from models import hmm, lstmcrf, brown_clustering_ner, distilbert_ner, decision_tree
+from preprocessing import vocab_and_datasets, preprocess, build_feature_mapping
+from models import hmm, lstmcrf, brown_clustering_ner, decision_tree
 from torch.utils.data import DataLoader
 
 # Define language groups
@@ -29,7 +29,6 @@ lstmcrf_model = lstmcrf(
     number_of_tags=len(label_map)
 )
 
-
 # Decision Tree Pre-training
 print("Pretraining Decision Tree on high-resource languages")
 feature_mapping = build_feature_mapping(multilingual_dataset)
@@ -49,13 +48,7 @@ for num_clusters in [5, 10, 20]:
     )
     print(f"Brown Clustering ({num_clusters} clusters) Pretraining | Precision: {brown_precision:.3f}, Recall: {brown_recall:.3f}, F1: {brown_f1:.3f}")
 
-# DistilBERT Pre-training
-print("Pretraining DistilBERT on high-resource languages")
-tokenized_datasets = preprocess_for_distilbert(multilingual_dataset)
-distilbert_model = distilbert_ner(
-    tokenized_datasets=tokenized_datasets,
-    label_map=label_map
-)
+
 
 # Few-shot Learning
 print("\nFew-shot Learning Experiment")
@@ -85,7 +78,6 @@ for percentage in percentages:
         )
         print(f"{percentage}% Few-shot LSTM-CRF for {lang} | Precision: {lstmcrf_precision:.3f}, Recall: {lstmcrf_recall:.3f}, F1: {lstmcrf_f1:.3f}")
 
-
         # Decision Tree
         feature_mapping = build_feature_mapping(multilingual_dataset)
         dt_precision, dt_recall, dt_f1 = decision_tree(
@@ -103,10 +95,3 @@ for percentage in percentages:
             )
             print(f"{percentage}% Few-shot Brown Clustering ({num_clusters} clusters) for {lang} | Precision: {brown_precision:.3f}, Recall: {brown_recall:.3f}, F1: {brown_f1:.3f}")
 
-        # DistilBERT
-        tokenized_datasets = preprocess_for_distilbert(multilingual_dataset)
-        distilbert_precision, distilbert_recall, distilbert_f1 = distilbert_ner(
-            tokenized_datasets=tokenized_datasets,
-            label_map=label_map
-        )
-        print(f"{percentage}% Few-shot DistilBERT for {lang} | Precision: {distilbert_precision:.3f}, Recall: {distilbert_recall:.3f}, F1: {distilbert_f1:.3f}")

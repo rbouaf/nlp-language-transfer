@@ -14,3 +14,7 @@ for r in range(1, n):
 lang_combos = list(all_combinations)
 lang_combos.append(langs)
 
+
+langs1 = []
+for i in langs:
+    langs1.append(list[i])
